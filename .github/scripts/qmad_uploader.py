@@ -37,8 +37,15 @@ def parse_coverage_xml(xml_file="coverage.xml"):
         print(f"Warning: Could not parse {xml_file}. Defaulting to 0 coverage. Error: {e}")
         return 0.0
 
-def get_sonar_task_id(report_file=".sonar/scanner/report-task.txt"):
-    """Reads the SonarCloud compute engine task ID from the report file."""
+def get_sonar_task_id(report_file=".sonar/scanner-report/report-task.txt"):
+    """
+    Reads the SonarCloud compute engine task ID from the report file.
+    Note: The path changed in newer sonar-scanner versions.
+    """
+    # Try the new path first
+    if not os.path.exists(report_file):
+        report_file = ".sonar/scanner/report-task.txt" # Try the old path
+        
     try:
         if not os.path.exists(report_file):
             print(f"Warning: Sonar report file '{report_file}' not found. Skipping Sonar metrics.")
@@ -67,7 +74,7 @@ def poll_sonar_analysis(task_id, sonar_token, sonar_host):
                 return task_data.get("analysisId")
             elif status in ["FAILED", "CANCELED"]:
                 print(f"Error: SonarCloud analysis {status}.")
-                sys.exit(1)
+                return None # Don't exit, just return None and let fallback run
             else:
                 print(f"SonarCloud analysis in progress (Status: {status}). Waiting 5 seconds...")
                 time.sleep(5)
@@ -76,7 +83,31 @@ def poll_sonar_analysis(task_id, sonar_token, sonar_host):
             time.sleep(5)
             
     print("Error: SonarCloud analysis timed out.")
-    sys.exit(1)
+    return None # Don't exit, let fallback run
+
+def _parse_sonar_measures(measures):
+    """Helper function to parse the list of metrics from SonarCloud."""
+    metrics = {}
+    for m in measures:
+        metric_key = m.get("metric")
+        value_str = m.get("value", "0")
+
+        if metric_key in ["security_rating", "reliability_rating", "sqale_rating"]:
+            # These are 'A', 'B', 'C' ratings (strings)
+            metrics[metric_key] = value_str
+        elif metric_key == "coverage":
+            # This is a float (e.g., '75.0')
+            try:
+                metrics[metric_key] = round(float(value_str), 2)
+            except ValueError:
+                metrics[metric_key] = 0.0
+        else:
+            # All others (bugs, vulnerabilities, code_smells) are ints
+            try:
+                metrics[metric_key] = int(value_str)
+            except ValueError:
+                metrics[metric_key] = 0
+    return metrics
 
 def get_sonar_metrics(analysis_id, project_key, sonar_token, sonar_host):
     """Fetches the final metrics from SonarCloud using the analysisId."""
@@ -93,14 +124,7 @@ def get_sonar_metrics(analysis_id, project_key, sonar_token, sonar_host):
         res.raise_for_status()
         measures = res.json().get("component", {}).get("measures", [])
         
-        metrics = {}
-        for m in measures:
-            metric_key = m.get("metric")
-            if metric_key in ["security_rating", "reliability_rating", "sqale_rating"]:
-                metrics[metric_key] = m.get("value")
-            else:
-                metrics[metric_key] = int(m.get("value", 0))
-        
+        metrics = _parse_sonar_measures(measures) # Use helper
         print(f"Successfully fetched SonarCloud metrics: {metrics}")
         return metrics
     except Exception as e:
@@ -127,13 +151,7 @@ def get_sonar_metrics_fallback(project_key, sonar_token, sonar_host, sonar_org):
         res.raise_for_status()
         measures = res.json().get("component", {}).get("measures", [])
         
-        metrics = {}
-        for m in measures:
-            metric_key = m.get("metric")
-            if metric_key in ["security_rating", "reliability_rating", "sqale_rating"]:
-                metrics[metric_key] = m.get("value")
-            else:
-                metrics[metric_key] = int(m.get("value", 0))
+        metrics = _parse_sonar_measures(measures) # Use helper
         
         print(f"Successfully fetched SonarCloud (fallback) metrics: {metrics}")
         return metrics
@@ -200,10 +218,16 @@ def main():
     # --- 5. Prepare Data Packet ---
     timestamp = firestore.SERVER_TIMESTAMP
     
+    # Use local pytest coverage as the primary source
+    final_coverage = coverage_percent
+    if sonar_metrics.get("coverage", 0) > 0 and final_coverage == 0:
+        # Use sonar coverage only if local parsing failed
+        final_coverage = sonar_metrics.get("coverage", 0)
+
     metrics_data = {
         "id": short_commit,
         "testResult": test_result,
-        "coverage": coverage_percent,
+        "coverage": final_coverage, # Use the most reliable coverage
         "vulnerabilities": sonar_metrics.get("vulnerabilities", 0),
         "bugs": sonar_metrics.get("bugs", 0),
         "codeSmells": sonar_metrics.get("code_smells", 0),
@@ -218,7 +242,7 @@ def main():
     risk = "GREEN"
     if test_result == "FAIL" or sonar_metrics.get("vulnerabilities", 0) > 0 or (sonar_metrics.get("security_rating", "A") > "C" and sonar_metrics.get("security_rating") != "N/A"):
         risk = "RED"
-    elif coverage_percent < 70 or sonar_metrics.get("bugs", 0) > 5 or (sonar_metrics.get("sqale_rating", "A") > "B" and sonar_metrics.get("sqale_rating") != "N/A"):
+    elif final_coverage < 70 or sonar_metrics.get("bugs", 0) > 5 or (sonar_metrics.get("sqale_rating", "A") > "B" and sonar_metrics.get("sqale_rating") != "N/A"):
         risk = "YELLOW"
 
     project_summary_data = {
@@ -251,3 +275,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
