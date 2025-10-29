@@ -35,18 +35,20 @@ jobs:
         continue-on-error: true 
         run: pytest --cov --cov-report=xml
 
-      # --- NEW SONARSCANNER STEPS ---
+      # --- FIXED SONARSCANNER STEPS ---
 
       - name: Set up Java 17
         # The generic SonarScanner CLI requires a Java 17 runtime
-        if: env.SONAR_TOKEN != ''
+        # FIXED: Check 'secrets' context directly
+        if: secrets.SONAR_TOKEN != ''
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
       - name: Download and set up SonarScanner
-        if: env.SONAR_TOKEN != ''
+        # FIXED: Check 'secrets' context directly
+        if: secrets.SONAR_TOKEN != ''
         env:
           SONAR_SCANNER_VERSION: 5.0.1.3006 # A specific, stable version
         run: |
@@ -57,7 +59,8 @@ jobs:
           
       - name: Run SonarCloud Scan
         # This one command replaces the begin/build/end steps
-        if: env.SONAR_TOKEN != ''
+        # This step is conditional
+        if: secrets.SONAR_TOKEN != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -71,11 +74,11 @@ jobs:
             -Dsonar.python.coverage.reportPaths="coverage.xml" \
             -Dsonar.login="$SONAR_TOKEN"
 
-      # --- END OF NEW SONARSCANNER STEPS ---
+      # --- END OF FIXED SONARSCANNER STEPS ---
       
       - name: Wait for SonarCloud Report
-        # This step is conditional; only run if SONAR_TOKEN is set
-        if: env.SONAR_TOKEN != ''
+        # This step is conditional
+        if: secrets.SONAR_TOKEN != ''
         run: |
           echo "Waiting for SonarCloud analysis to be available..."
           # Give SonarCloud time to process the report
@@ -102,4 +105,3 @@ jobs:
           SONAR_ORGANIZATION: ${{ secrets.SONAR_ORGANIZATION }}
         run: |
           python .github/scripts/qmad_uploader.py
-
