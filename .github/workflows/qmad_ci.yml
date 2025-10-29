@@ -35,43 +35,50 @@ jobs:
         continue-on-error: true 
         run: pytest --cov --cov-report=xml
 
-      - name: Install SonarCloud Scanner
-        # This step is conditional; only run if SONAR_TOKEN is set
-        if: env.SONAR_TOKEN != ''
-        run: |
-          dotnet tool install --global dotnet-sonarscanner
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      # --- NEW SONARSCANNER STEPS ---
 
+      - name: Set up Java 17
+        # The generic SonarScanner CLI requires a Java 17 runtime
+        if: env.SONAR_TOKEN != ''
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
 
-      - name: Run SonarCloud Scan
-        # This step scans and pushes data to SonarCloud.io
-        # This step is conditional; only run if SONAR_TOKEN is set
+      - name: Download and set up SonarScanner
         if: env.SONAR_TOKEN != ''
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # GITHUB_TOKEN for pull request decoration
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_SCANNER_VERSION: 5.0.1.3006 # A specific, stable version
         run: |
-          dotnet-sonarscanner begin \
-            /k:"${{ secrets.SONAR_PROJECT_KEY }}" \
-            /o:"${{ secrets.SONAR_ORGANIZATION }}" \
-            /d:sonar.host.url="https://sonarcloud.io" \
-            /d:sonar.pullrequest.provider="github" \
-            /d:sonar.pullrequest.github.repository="$GITHUB_REPOSITORY" \
-            /d:sonar.pullrequest.key="$GITHUB_REF" \
-            /d:sonar.python.coverage.reportPaths="coverage.xml" \
-            /d:sonar.login="$SONAR_TOKEN"
-            
-          # (This command is empty for Python but required by Sonar)
-          dotnet build --no-incremental
+          mkdir -p $HOME/.sonar
+          curl -sSLo $HOME/.sonar/sonar-scanner.zip "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_SCANNER_VERSION}-linux.zip"
+          unzip -o $HOME/.sonar/sonar-scanner.zip -d $HOME/.sonar/
+          echo "$HOME/.sonar/sonar-scanner-${SONAR_SCANNER_VERSION}-linux/bin" >> $GITHUB_PATH
           
-          dotnet-sonarscanner end /d:sonar.login="$SONAR_TOKEN"
+      - name: Run SonarCloud Scan
+        # This one command replaces the begin/build/end steps
+        if: env.SONAR_TOKEN != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          sonar-scanner \
+            -Dsonar.host.url="https://sonarcloud.io" \
+            -Dsonar.organization="${{ secrets.SONAR_ORGANIZATION }}" \
+            -Dsonar.projectKey="${{ secrets.SONAR_PROJECT_KEY }}" \
+            -Dsonar.sources="." \
+            -Dsonar.exclusions="**/*.xml, .github/**, tests/**" \
+            -Dsonar.python.coverage.reportPaths="coverage.xml" \
+            -Dsonar.login="$SONAR_TOKEN"
+
+      # --- END OF NEW SONARSCANNER STEPS ---
       
       - name: Wait for SonarCloud Report
         # This step is conditional; only run if SONAR_TOKEN is set
         if: env.SONAR_TOKEN != ''
         run: |
           echo "Waiting for SonarCloud analysis to be available..."
+          # Give SonarCloud time to process the report
           sleep 30
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -82,6 +89,7 @@ jobs:
           
       - name: Run Q-MAD Uploader
         # This is the "magic" step.
+        # It runs our script to poll SonarCloud and upload *all* data.
         env:
           PYTEST_RESULT: ${{ steps.tests.outcome == 'success' && 'PASS' || 'FAIL' }}
           GITHUB_SHA: ${{ github.sha }}
@@ -94,3 +102,4 @@ jobs:
           SONAR_ORGANIZATION: ${{ secrets.SONAR_ORGANIZATION }}
         run: |
           python .github/scripts/qmad_uploader.py
+
