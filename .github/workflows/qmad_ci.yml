@@ -11,7 +11,12 @@ on:
 jobs:
   build-and-scan:
     runs-on: ubuntu-latest
-
+    
+    # --- NEW JOB-LEVEL ENV BLOCK ---
+    # This makes the SONAR_TOKEN secret available to all 'if:' conditions in this job
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -35,20 +40,20 @@ jobs:
         continue-on-error: true 
         run: pytest --cov --cov-report=xml
 
-      # --- FIXED SONARSCANNER STEPS ---
+      # --- CORRECTED SONARSCANNER STEPS ---
 
       - name: Set up Java 17
         # The generic SonarScanner CLI requires a Java 17 runtime
-        # FIXED: Check 'secrets' context directly
-        if: secrets.SONAR_TOKEN != ''
+        # CORRECTED: Checks the 'env' context, which is now set for the job
+        if: env.SONAR_TOKEN != ''
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
       - name: Download and set up SonarScanner
-        # FIXED: Check 'secrets' context directly
-        if: secrets.SONAR_TOKEN != ''
+        # CORRECTED: Checks the 'env' context
+        if: env.SONAR_TOKEN != ''
         env:
           SONAR_SCANNER_VERSION: 5.0.1.3006 # A specific, stable version
         run: |
@@ -60,10 +65,11 @@ jobs:
       - name: Run SonarCloud Scan
         # This one command replaces the begin/build/end steps
         # This step is conditional
-        if: secrets.SONAR_TOKEN != ''
+        # CORRECTED: Checks the 'env' context
+        if: env.SONAR_TOKEN != ''
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          # SONAR_TOKEN is already available from the job-level 'env'
         run: |
           sonar-scanner \
             -Dsonar.host.url="https://sonarcloud.io" \
@@ -74,17 +80,16 @@ jobs:
             -Dsonar.python.coverage.reportPaths="coverage.xml" \
             -Dsonar.login="$SONAR_TOKEN"
 
-      # --- END OF FIXED SONARSCANNER STEPS ---
+      # --- END OF CORRECTED SONARSCANNER STEPS ---
       
       - name: Wait for SonarCloud Report
         # This step is conditional
-        if: secrets.SONAR_TOKEN != ''
+        # CORRECTED: Checks the 'env' context
+        if: env.SONAR_TOKEN != ''
         run: |
           echo "Waiting for SonarCloud analysis to be available..."
           # Give SonarCloud time to process the report
           sleep 30
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
       - name: Install Uploader Dependencies
         run: |
@@ -100,8 +105,9 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
           QMAD_PROJECT_ID: ${{ secrets.QMAD_PROJECT_ID }}
           QMAD_FIREBASE_SERVICE_ACCOUNT: ${{ secrets.QMAD_FIREBASE_SERVICE_ACCOUNT }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          # SONAR_TOKEN, SONAR_PROJECT_KEY, SONAR_ORGANIZATION are passed in from job env/secrets
           SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
           SONAR_ORGANIZATION: ${{ secrets.SONAR_ORGANIZATION }}
         run: |
           python .github/scripts/qmad_uploader.py
+
