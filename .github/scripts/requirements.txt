@@ -1,0 +1,3 @@
+# Requirements for the uploader script
+google-cloud-firestore
+requests

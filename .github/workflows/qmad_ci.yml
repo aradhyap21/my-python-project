@@ -1,0 +1,96 @@
+name: Q-MAD Quality Scan
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  # Allow manual trigger
+  workflow_dispatch:
+
+jobs:
+  build-and-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Needed for SonarCloud analysis
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Project Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          
+      - name: Run Pytest & Coverage
+        id: tests
+        # 'continue-on-error' allows the workflow to proceed even if tests fail
+        # We capture the failure in 'steps.tests.outcome'
+        continue-on-error: true 
+        run: pytest --cov --cov-report=xml
+
+      - name: Install SonarCloud Scanner
+        # This step is conditional; only run if SONAR_TOKEN is set
+        if: env.SONAR_TOKEN != ''
+        run: |
+          dotnet tool install --global dotnet-sonarscanner
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+
+      - name: Run SonarCloud Scan
+        # This step scans and pushes data to SonarCloud.io
+        # This step is conditional; only run if SONAR_TOKEN is set
+        if: env.SONAR_TOKEN != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # GITHUB_TOKEN for pull request decoration
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          dotnet-sonarscanner begin \
+            /k:"${{ secrets.SONAR_PROJECT_KEY }}" \
+            /o:"${{ secrets.SONAR_ORGANIZATION }}" \
+            /d:sonar.host.url="https://sonarcloud.io" \
+            /d:sonar.pullrequest.provider="github" \
+            /d:sonar.pullrequest.github.repository="$GITHUB_REPOSITORY" \
+            /d:sonar.pullrequest.key="$GITHUB_REF" \
+            /d:sonar.python.coverage.reportPaths="coverage.xml" \
+            /d:sonar.login="$SONAR_TOKEN"
+            
+          # (This command is empty for Python but required by Sonar)
+          dotnet build --no-incremental
+          
+          dotnet-sonarscanner end /d:sonar.login="$SONAR_TOKEN"
+      
+      - name: Wait for SonarCloud Report
+        # This step is conditional; only run if SONAR_TOKEN is set
+        if: env.SONAR_TOKEN != ''
+        run: |
+          echo "Waiting for SonarCloud analysis to be available..."
+          sleep 30
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Install Uploader Dependencies
+        run: |
+          pip install -r .github/scripts/requirements.txt
+          
+      - name: Run Q-MAD Uploader
+        # This is the "magic" step.
+        env:
+          PYTEST_RESULT: ${{ steps.tests.outcome == 'success' && 'PASS' || 'FAIL' }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          QMAD_PROJECT_ID: ${{ secrets.QMAD_PROJECT_ID }}
+          QMAD_FIREBASE_SERVICE_ACCOUNT: ${{ secrets.QMAD_FIREBASE_SERVICE_ACCOUNT }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
+          SONAR_ORGANIZATION: ${{ secrets.SONAR_ORGANIZATION }}
+        run: |
+          python .github/scripts/qmad_uploader.py
